@@ -3,58 +3,46 @@ package configfile
 
 import (
 	"bytes"
-	"context"
-	"io/ioutil"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
-	"github.com/Unknwon/goconfig"
-	"github.com/pkg/errors"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
+	"github.com/rclone/rclone/lib/file"
+	"github.com/unknwon/goconfig" //nolint:misspell // Don't include misspell when running golangci-lint
 )
 
-// Special value indicating in memory config file. Empty string works also.
-const noConfigFile = "/notfound"
-
-// LoadConfig installs the config file handler and calls config.LoadConfig
-func LoadConfig(ctx context.Context) {
-	config.Data = &Storage{}
-	config.LoadConfig(ctx)
+// Install installs the config file handler
+func Install() {
+	config.SetData(&Storage{})
 }
 
 // Storage implements config.Storage for saving and loading config
 // data in a simple INI based file.
 type Storage struct {
-	gc *goconfig.ConfigFile // config file loaded - thread safe
 	mu sync.Mutex           // to protect the following variables
+	gc *goconfig.ConfigFile // config file loaded - not thread safe
 	fi os.FileInfo          // stat of the file when last loaded
 }
 
-// Return whether we have a real config file or not
-func (s *Storage) noConfig() bool {
-	return config.ConfigPath == "" || config.ConfigPath == noConfigFile
-}
-
 // Check to see if we need to reload the config
-func (s *Storage) check() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.noConfig() {
-		return
-	}
-
-	// Check to see if config file has changed since it was last loaded
-	fi, err := os.Stat(config.ConfigPath)
-	if err == nil {
-		// check to see if config file has changed and if it has, reload it
-		if s.fi == nil || !fi.ModTime().Equal(s.fi.ModTime()) || fi.Size() != s.fi.Size() {
-			fs.Debugf(nil, "Config file has changed externaly - reloading")
-			err := s._load()
-			if err != nil {
-				fs.Errorf(nil, "Failed to read config file - using previous config: %v", err)
+//
+// mu must be held when calling this
+func (s *Storage) _check() {
+	if configPath := config.GetConfigPath(); configPath != "" {
+		// Check to see if config file has changed since it was last loaded
+		fi, err := os.Stat(configPath)
+		if err == nil {
+			// check to see if config file has changed and if it has, reload it
+			if s.fi == nil || !fi.ModTime().Equal(s.fi.ModTime()) || fi.Size() != s.fi.Size() {
+				fs.Debugf(nil, "Config file has changed externally - reloading")
+				err := s._load()
+				if err != nil {
+					fs.Errorf(nil, "Failed to read config file - using previous config: %v", err)
+				}
 			}
 		}
 	}
@@ -71,11 +59,12 @@ func (s *Storage) _load() (err error) {
 		}
 	}()
 
-	if s.noConfig() {
+	configPath := config.GetConfigPath()
+	if configPath == "" {
 		return config.ErrorConfigFileNotFound
 	}
 
-	fd, err := os.Open(config.ConfigPath)
+	fd, err := os.Open(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return config.ErrorConfigFileNotFound
@@ -85,7 +74,7 @@ func (s *Storage) _load() (err error) {
 	defer fs.CheckClose(fd, &err)
 
 	// Update s.fi with the current file info
-	s.fi, _ = os.Stat(config.ConfigPath)
+	s.fi, _ = os.Stat(configPath)
 
 	cryptReader, err := config.Decrypt(fd)
 	if err != nil {
@@ -113,29 +102,47 @@ func (s *Storage) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.noConfig() {
-		return nil
+	configPath := config.GetConfigPath()
+	if configPath == "" {
+		return fmt.Errorf("failed to save config file, path is empty")
 	}
+	configDir, configName := filepath.Split(configPath)
 
-	dir, name := filepath.Split(config.ConfigPath)
-	err := os.MkdirAll(dir, os.ModePerm)
+	info, err := os.Lstat(configPath)
 	if err != nil {
-		return errors.Wrap(err, "failed to create config directory")
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to resolve config file path: %w", err)
+		}
+	} else {
+		if info.Mode()&os.ModeSymlink != 0 {
+			configPath, err = os.Readlink(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to resolve config file symbolic link: %w", err)
+			}
+			if !filepath.IsAbs(configPath) {
+				configPath = filepath.Join(configDir, configPath)
+			}
+			configDir = filepath.Dir(configPath)
+		}
 	}
-	f, err := ioutil.TempFile(dir, name)
+	err = file.MkdirAll(configDir, os.ModePerm)
 	if err != nil {
-		return errors.Errorf("Failed to create temp file for new config: %v", err)
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+	f, err := os.CreateTemp(configDir, configName)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file for new config: %w", err)
 	}
 	defer func() {
 		_ = f.Close()
 		if err := os.Remove(f.Name()); err != nil && !os.IsNotExist(err) {
-			fs.Errorf(nil, "Failed to remove temp config file: %v", err)
+			fs.Errorf(nil, "Failed to remove temp file for new config: %v", err)
 		}
 	}()
 
 	var buf bytes.Buffer
 	if err := goconfig.SaveConfigData(s.gc, &buf); err != nil {
-		return errors.Errorf("Failed to save config file: %v", err)
+		return fmt.Errorf("failed to save config file: %w", err)
 	}
 
 	if err := config.Encrypt(&buf, f); err != nil {
@@ -145,11 +152,11 @@ func (s *Storage) Save() error {
 	_ = f.Sync()
 	err = f.Close()
 	if err != nil {
-		return errors.Errorf("Failed to close config file: %v", err)
+		return fmt.Errorf("failed to close config file: %w", err)
 	}
 
 	var fileMode os.FileMode = 0600
-	info, err := os.Stat(config.ConfigPath)
+	info, err = os.Stat(configPath)
 	if err != nil {
 		fs.Debugf(nil, "Using default permissions for config file: %v", fileMode)
 	} else if info.Mode() != fileMode {
@@ -157,35 +164,56 @@ func (s *Storage) Save() error {
 		fileMode = info.Mode()
 	}
 
-	attemptCopyGroup(config.ConfigPath, f.Name())
+	attemptCopyGroup(configPath, f.Name())
 
 	err = os.Chmod(f.Name(), fileMode)
 	if err != nil {
 		fs.Errorf(nil, "Failed to set permissions on config file: %v", err)
 	}
 
-	if err = os.Rename(config.ConfigPath, config.ConfigPath+".old"); err != nil && !os.IsNotExist(err) {
-		return errors.Errorf("Failed to move previous config to backup location: %v", err)
+	fbackup, err := os.CreateTemp(configDir, configName+".old")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file for old config backup: %w", err)
 	}
-	if err = os.Rename(f.Name(), config.ConfigPath); err != nil {
-		return errors.Errorf("Failed to move newly written config from %s to final location: %v", f.Name(), err)
+	err = fbackup.Close()
+	if err != nil {
+		return fmt.Errorf("failed to close temp file for old config backup: %w", err)
 	}
-	if err := os.Remove(config.ConfigPath + ".old"); err != nil && !os.IsNotExist(err) {
-		fs.Errorf(nil, "Failed to remove backup config file: %v", err)
+	keepBackup := true
+	defer func() {
+		if !keepBackup {
+			if err := os.Remove(fbackup.Name()); err != nil && !os.IsNotExist(err) {
+				fs.Errorf(nil, "Failed to remove temp file for old config backup: %v", err)
+			}
+		}
+	}()
+
+	if err = os.Rename(configPath, fbackup.Name()); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to move previous config to backup location: %w", err)
+		}
+		keepBackup = false // no existing file, no need to keep backup even if writing of new file fails
 	}
+	if err = os.Rename(f.Name(), configPath); err != nil {
+		return fmt.Errorf("failed to move newly written config from %s to final location: %v", f.Name(), err)
+	}
+	keepBackup = false // new file was written, no need to keep backup
 
 	// Update s.fi with the newly written file
-	s.fi, _ = os.Stat(config.ConfigPath)
+	s.fi, _ = os.Stat(configPath)
 
 	return nil
 }
 
 // Serialize the config into a string
 func (s *Storage) Serialize() (string, error) {
-	s.check()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s._check()
 	var buf bytes.Buffer
 	if err := goconfig.SaveConfigData(s.gc, &buf); err != nil {
-		return "", errors.Errorf("Failed to save config file: %v", err)
+		return "", fmt.Errorf("failed to save config file: %w", err)
 	}
 
 	return buf.String(), nil
@@ -193,37 +221,49 @@ func (s *Storage) Serialize() (string, error) {
 
 // HasSection returns true if section exists in the config file
 func (s *Storage) HasSection(section string) bool {
-	s.check()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s._check()
 	_, err := s.gc.GetSection(section)
-	if err != nil {
-		return false
-	}
-	return true
+	return err == nil
 }
 
 // DeleteSection removes the named section and all config from the
 // config file
 func (s *Storage) DeleteSection(section string) {
-	s.check()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s._check()
 	s.gc.DeleteSection(section)
 }
 
 // GetSectionList returns a slice of strings with names for all the
 // sections
 func (s *Storage) GetSectionList() []string {
-	s.check()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s._check()
 	return s.gc.GetSectionList()
 }
 
 // GetKeyList returns the keys in this section
 func (s *Storage) GetKeyList(section string) []string {
-	s.check()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s._check()
 	return s.gc.GetKeyList(section)
 }
 
 // GetValue returns the key in section with a found flag
 func (s *Storage) GetValue(section string, key string) (value string, found bool) {
-	s.check()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s._check()
 	value, err := s.gc.GetValue(section, key)
 	if err != nil {
 		return "", false
@@ -233,13 +273,23 @@ func (s *Storage) GetValue(section string, key string) (value string, found bool
 
 // SetValue sets the value under key in section
 func (s *Storage) SetValue(section string, key string, value string) {
-	s.check()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s._check()
+	if strings.HasPrefix(section, ":") {
+		fs.Logf(nil, "Can't save config %q for on the fly backend %q", key, section)
+		return
+	}
 	s.gc.SetValue(section, key, value)
 }
 
 // DeleteKey removes the key under section
 func (s *Storage) DeleteKey(section string, key string) bool {
-	s.check()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s._check()
 	return s.gc.DeleteKey(section, key)
 }
 

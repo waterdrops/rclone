@@ -2,14 +2,18 @@
 package union_test
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	_ "github.com/rclone/rclone/backend/local"
+	_ "github.com/rclone/rclone/backend/memory"
+	"github.com/rclone/rclone/backend/union"
 	"github.com/rclone/rclone/fstest"
 	"github.com/rclone/rclone/fstest/fstests"
-	"github.com/stretchr/testify/require"
+)
+
+var (
+	unimplementableFsMethods     = []string{"UnWrap", "WrapFs", "SetWrapper", "UserInfo", "Disconnect", "PublicLink", "PutUnchecked", "MergeDirs", "OpenWriterAt", "OpenChunkWriter", "ListP"}
+	unimplementableObjectMethods = []string{}
 )
 
 // TestIntegration runs integration tests against the remote
@@ -19,8 +23,8 @@ func TestIntegration(t *testing.T) {
 	}
 	fstests.Run(t, &fstests.Opt{
 		RemoteName:                   *fstest.RemoteName,
-		UnimplementableFsMethods:     []string{"OpenWriterAt", "DuplicateFiles"},
-		UnimplementableObjectMethods: []string{"MimeType"},
+		UnimplementableFsMethods:     unimplementableFsMethods,
+		UnimplementableObjectMethods: unimplementableObjectMethods,
 	})
 }
 
@@ -28,13 +32,8 @@ func TestStandard(t *testing.T) {
 	if *fstest.RemoteName != "" {
 		t.Skip("Skipping as -remote set")
 	}
-	tempdir1 := filepath.Join(os.TempDir(), "rclone-union-test-standard1")
-	tempdir2 := filepath.Join(os.TempDir(), "rclone-union-test-standard2")
-	tempdir3 := filepath.Join(os.TempDir(), "rclone-union-test-standard3")
-	require.NoError(t, os.MkdirAll(tempdir1, 0744))
-	require.NoError(t, os.MkdirAll(tempdir2, 0744))
-	require.NoError(t, os.MkdirAll(tempdir3, 0744))
-	upstreams := tempdir1 + " " + tempdir2 + " " + tempdir3
+	dirs := union.MakeTestDirs(t, 3)
+	upstreams := dirs[0] + " " + dirs[1] + " " + dirs[2]
 	name := "TestUnion"
 	fstests.Run(t, &fstests.Opt{
 		RemoteName: name + ":",
@@ -45,8 +44,9 @@ func TestStandard(t *testing.T) {
 			{Name: name, Key: "create_policy", Value: "epmfs"},
 			{Name: name, Key: "search_policy", Value: "ff"},
 		},
-		UnimplementableFsMethods:     []string{"OpenWriterAt", "DuplicateFiles"},
-		UnimplementableObjectMethods: []string{"MimeType"},
+		UnimplementableFsMethods:     unimplementableFsMethods,
+		UnimplementableObjectMethods: unimplementableObjectMethods,
+		QuickTestOK:                  true,
 	})
 }
 
@@ -54,13 +54,8 @@ func TestRO(t *testing.T) {
 	if *fstest.RemoteName != "" {
 		t.Skip("Skipping as -remote set")
 	}
-	tempdir1 := filepath.Join(os.TempDir(), "rclone-union-test-ro1")
-	tempdir2 := filepath.Join(os.TempDir(), "rclone-union-test-ro2")
-	tempdir3 := filepath.Join(os.TempDir(), "rclone-union-test-ro3")
-	require.NoError(t, os.MkdirAll(tempdir1, 0744))
-	require.NoError(t, os.MkdirAll(tempdir2, 0744))
-	require.NoError(t, os.MkdirAll(tempdir3, 0744))
-	upstreams := tempdir1 + " " + tempdir2 + ":ro " + tempdir3 + ":ro"
+	dirs := union.MakeTestDirs(t, 3)
+	upstreams := dirs[0] + " " + dirs[1] + ":ro " + dirs[2] + ":ro"
 	name := "TestUnionRO"
 	fstests.Run(t, &fstests.Opt{
 		RemoteName: name + ":",
@@ -71,8 +66,9 @@ func TestRO(t *testing.T) {
 			{Name: name, Key: "create_policy", Value: "epmfs"},
 			{Name: name, Key: "search_policy", Value: "ff"},
 		},
-		UnimplementableFsMethods:     []string{"OpenWriterAt", "DuplicateFiles"},
-		UnimplementableObjectMethods: []string{"MimeType"},
+		UnimplementableFsMethods:     unimplementableFsMethods,
+		UnimplementableObjectMethods: unimplementableObjectMethods,
+		QuickTestOK:                  true,
 	})
 }
 
@@ -80,13 +76,8 @@ func TestNC(t *testing.T) {
 	if *fstest.RemoteName != "" {
 		t.Skip("Skipping as -remote set")
 	}
-	tempdir1 := filepath.Join(os.TempDir(), "rclone-union-test-nc1")
-	tempdir2 := filepath.Join(os.TempDir(), "rclone-union-test-nc2")
-	tempdir3 := filepath.Join(os.TempDir(), "rclone-union-test-nc3")
-	require.NoError(t, os.MkdirAll(tempdir1, 0744))
-	require.NoError(t, os.MkdirAll(tempdir2, 0744))
-	require.NoError(t, os.MkdirAll(tempdir3, 0744))
-	upstreams := tempdir1 + " " + tempdir2 + ":nc " + tempdir3 + ":nc"
+	dirs := union.MakeTestDirs(t, 3)
+	upstreams := dirs[0] + " " + dirs[1] + ":nc " + dirs[2] + ":nc"
 	name := "TestUnionNC"
 	fstests.Run(t, &fstests.Opt{
 		RemoteName: name + ":",
@@ -97,8 +88,9 @@ func TestNC(t *testing.T) {
 			{Name: name, Key: "create_policy", Value: "epmfs"},
 			{Name: name, Key: "search_policy", Value: "ff"},
 		},
-		UnimplementableFsMethods:     []string{"OpenWriterAt", "DuplicateFiles"},
-		UnimplementableObjectMethods: []string{"MimeType"},
+		UnimplementableFsMethods:     unimplementableFsMethods,
+		UnimplementableObjectMethods: unimplementableObjectMethods,
+		QuickTestOK:                  true,
 	})
 }
 
@@ -106,13 +98,8 @@ func TestPolicy1(t *testing.T) {
 	if *fstest.RemoteName != "" {
 		t.Skip("Skipping as -remote set")
 	}
-	tempdir1 := filepath.Join(os.TempDir(), "rclone-union-test-policy11")
-	tempdir2 := filepath.Join(os.TempDir(), "rclone-union-test-policy12")
-	tempdir3 := filepath.Join(os.TempDir(), "rclone-union-test-policy13")
-	require.NoError(t, os.MkdirAll(tempdir1, 0744))
-	require.NoError(t, os.MkdirAll(tempdir2, 0744))
-	require.NoError(t, os.MkdirAll(tempdir3, 0744))
-	upstreams := tempdir1 + " " + tempdir2 + " " + tempdir3
+	dirs := union.MakeTestDirs(t, 3)
+	upstreams := dirs[0] + " " + dirs[1] + " " + dirs[2]
 	name := "TestUnionPolicy1"
 	fstests.Run(t, &fstests.Opt{
 		RemoteName: name + ":",
@@ -123,8 +110,9 @@ func TestPolicy1(t *testing.T) {
 			{Name: name, Key: "create_policy", Value: "lus"},
 			{Name: name, Key: "search_policy", Value: "all"},
 		},
-		UnimplementableFsMethods:     []string{"OpenWriterAt", "DuplicateFiles"},
-		UnimplementableObjectMethods: []string{"MimeType"},
+		UnimplementableFsMethods:     unimplementableFsMethods,
+		UnimplementableObjectMethods: unimplementableObjectMethods,
+		QuickTestOK:                  true,
 	})
 }
 
@@ -132,13 +120,8 @@ func TestPolicy2(t *testing.T) {
 	if *fstest.RemoteName != "" {
 		t.Skip("Skipping as -remote set")
 	}
-	tempdir1 := filepath.Join(os.TempDir(), "rclone-union-test-policy21")
-	tempdir2 := filepath.Join(os.TempDir(), "rclone-union-test-policy22")
-	tempdir3 := filepath.Join(os.TempDir(), "rclone-union-test-policy23")
-	require.NoError(t, os.MkdirAll(tempdir1, 0744))
-	require.NoError(t, os.MkdirAll(tempdir2, 0744))
-	require.NoError(t, os.MkdirAll(tempdir3, 0744))
-	upstreams := tempdir1 + " " + tempdir2 + " " + tempdir3
+	dirs := union.MakeTestDirs(t, 3)
+	upstreams := dirs[0] + " " + dirs[1] + " " + dirs[2]
 	name := "TestUnionPolicy2"
 	fstests.Run(t, &fstests.Opt{
 		RemoteName: name + ":",
@@ -149,8 +132,9 @@ func TestPolicy2(t *testing.T) {
 			{Name: name, Key: "create_policy", Value: "rand"},
 			{Name: name, Key: "search_policy", Value: "ff"},
 		},
-		UnimplementableFsMethods:     []string{"OpenWriterAt", "DuplicateFiles"},
-		UnimplementableObjectMethods: []string{"MimeType"},
+		UnimplementableFsMethods:     unimplementableFsMethods,
+		UnimplementableObjectMethods: unimplementableObjectMethods,
+		QuickTestOK:                  true,
 	})
 }
 
@@ -158,13 +142,8 @@ func TestPolicy3(t *testing.T) {
 	if *fstest.RemoteName != "" {
 		t.Skip("Skipping as -remote set")
 	}
-	tempdir1 := filepath.Join(os.TempDir(), "rclone-union-test-policy31")
-	tempdir2 := filepath.Join(os.TempDir(), "rclone-union-test-policy32")
-	tempdir3 := filepath.Join(os.TempDir(), "rclone-union-test-policy33")
-	require.NoError(t, os.MkdirAll(tempdir1, 0744))
-	require.NoError(t, os.MkdirAll(tempdir2, 0744))
-	require.NoError(t, os.MkdirAll(tempdir3, 0744))
-	upstreams := tempdir1 + " " + tempdir2 + " " + tempdir3
+	dirs := union.MakeTestDirs(t, 3)
+	upstreams := dirs[0] + " " + dirs[1] + " " + dirs[2]
 	name := "TestUnionPolicy3"
 	fstests.Run(t, &fstests.Opt{
 		RemoteName: name + ":",
@@ -175,7 +154,8 @@ func TestPolicy3(t *testing.T) {
 			{Name: name, Key: "create_policy", Value: "all"},
 			{Name: name, Key: "search_policy", Value: "all"},
 		},
-		UnimplementableFsMethods:     []string{"OpenWriterAt", "DuplicateFiles"},
-		UnimplementableObjectMethods: []string{"MimeType"},
+		UnimplementableFsMethods:     unimplementableFsMethods,
+		UnimplementableObjectMethods: unimplementableObjectMethods,
+		QuickTestOK:                  true,
 	})
 }
